@@ -112,7 +112,14 @@ def normalize_auth(auth: str):
     return base, f"base64:{auth}"
 
 
-def _request_with_cloudflare_retry(method: str, url: str, timeout: int = 30, retries: int = 3, backoff: float = 1.5, **kwargs):
+def _request_with_cloudflare_retry(
+    method: str,
+    url: str,
+    timeout: int = 30,
+    retries: int = 3,
+    backoff: float = 1.5,
+    **kwargs,
+):
     """
     Thực hiện HTTP request với retry khi:
     - Bị Cloudflare trả về trang "Just a moment..." (HTTP 403 + HTML challenge)
@@ -122,13 +129,13 @@ def _request_with_cloudflare_retry(method: str, url: str, timeout: int = 30, ret
 
     Điều này giúp giảm các lỗi lặt vặt do Cloudflare thỉnh thoảng bật
     challenge ngẫu nhiên hoặc các lỗi mạng tạm thời.
-    
+
     Sử dụng tuple timeout (connect_timeout, read_timeout) để phát hiện
     lỗi kết nối nhanh hơn và tránh hang quá lâu.
     """
     last_exception = None
     last_resp = None
-    
+
     # Sử dụng tuple timeout: (connect_timeout, read_timeout)
     # Connect timeout ngắn hơn để phát hiện lỗi kết nối nhanh
     # Read timeout dài hơn để đợi response từ server
@@ -138,52 +145,75 @@ def _request_with_cloudflare_retry(method: str, url: str, timeout: int = 30, ret
         timeout_tuple = (connect_timeout, read_timeout)
     else:
         timeout_tuple = timeout
-    
+
     # Sử dụng session để kiểm soát connection tốt hơn
     session = requests.Session()
     # Tắt connection pooling để tránh reuse connection bị lỗi
-    session.mount('http://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0))
-    session.mount('https://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0))
-    
+    session.mount(
+        "http://",
+        requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0),
+    )
+    session.mount(
+        "https://",
+        requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0),
+    )
+
     try:
         for attempt in range(retries):
             try:
                 # Sử dụng stream=True để kiểm soát tốt hơn việc đọc response
                 # Sử dụng tuple timeout để phát hiện lỗi kết nối nhanh hơn
-                resp = session.request(method=method, url=url, timeout=timeout_tuple, stream=True, **kwargs)
+                resp = session.request(
+                    method=method, url=url, timeout=timeout_tuple, stream=True, **kwargs
+                )
                 last_resp = resp
-                
+
                 # Đọc response body có thể gây ra lỗi SSL/socket
                 # nếu connection bị đóng trong lúc đọc
                 try:
                     text = resp.text or ""
-                except (SSLError, ConnectionError, socket.error, ssl.SSLError, OSError, Exception) as read_err:
+                except (
+                    SSLError,
+                    ConnectionError,
+                    socket.error,
+                    ssl.SSLError,
+                    OSError,
+                    Exception,
+                ) as read_err:
                     # Nếu lỗi khi đọc response body, coi như request failed và retry
                     last_exception = read_err
-                    # Đóng response để cleanup
                     try:
                         resp.close()
-                    except:
+                    except Exception:
                         pass
                     if attempt < retries - 1:
                         time.sleep(backoff)
                         backoff *= 2
                         continue
                     raise
-                
+
                 # Nếu không phải 403, hoặc nội dung không giống trang challenge,
                 # trả về luôn (để logic cũ xử lý).
                 if resp.status_code != 403 or "Just a moment" not in text:
                     return resp
-                
+
                 # Nếu là 403 kiểu Cloudflare challenge và vẫn còn lượt retry,
                 # đợi một chút rồi thử lại.
                 if attempt < retries - 1:
                     time.sleep(backoff)
                     backoff *= 2
                     continue
-                    
-            except (ConnectionError, SSLError, Timeout, RequestException, socket.error, ssl.SSLError, OSError, Exception) as e:
+
+            except (
+                ConnectionError,
+                SSLError,
+                Timeout,
+                RequestException,
+                socket.error,
+                ssl.SSLError,
+                OSError,
+                Exception,
+            ) as e:
                 # Bỏ qua SystemExit và KeyboardInterrupt để không chặn shutdown
                 if isinstance(e, (SystemExit, KeyboardInterrupt)):
                     raise
@@ -199,33 +229,45 @@ def _request_with_cloudflare_retry(method: str, url: str, timeout: int = 30, ret
         # Đóng session để cleanup connections
         try:
             session.close()
-        except:
+        except Exception:
             pass
-    
+
     # Nếu có response cuối cùng (dù là 403), trả về nó
     if last_resp is not None:
         return last_resp
-    
+
     # Nếu không có response nào thành công, raise exception cuối cùng
     if last_exception is not None:
         raise last_exception
-    
+
     # Fallback (không nên xảy ra)
     raise RuntimeError(f"Request failed after {retries} attempts")
-
 
 
 def invite_with_failover(auth: str, member_email: str, max_size: int):
     base = os.getenv("MANAGETEAM_BASE_URL", "https://trandinhat.tokyo/api").rstrip("/")
     url = f"{base}/public/add-member"
-    
+
+    # --- FIX: dùng _request_with_cloudflare_retry thay vì requests.post thuần ---
     try:
-        resp = requests.post(url, json={"email": member_email}, timeout=30)
-        data = resp.json()
-    except requests.exceptions.JSONDecodeError:
-        raise RuntimeError(f"Server trả về HTML thay vì JSON (HTTP {resp.status_code}). Kiểm tra lại URL API.")
+        resp = _request_with_cloudflare_retry(
+            method="POST",
+            url=url,
+            json={"email": member_email},
+            timeout=30,
+            retries=3,
+        )
     except Exception as e:
         raise RuntimeError(f"Không thể kết nối tới server: {e}")
+
+    # --- FIX: tách riêng việc parse JSON để tránh UnboundLocalError ---
+    try:
+        data = resp.json()
+    except requests.exceptions.JSONDecodeError:
+        raise RuntimeError(
+            f"Server trả về HTML thay vì JSON (HTTP {resp.status_code}). "
+            "Kiểm tra lại URL API."
+        )
 
     if resp.status_code >= 400 or not data.get("success"):
         err = data.get("error") or "Lỗi thêm thành viên"
@@ -233,15 +275,16 @@ def invite_with_failover(auth: str, member_email: str, max_size: int):
 
     team_name = data.get("team") or "Unknown Team"
     members_count = data.get("members") or "?/5"
-    
+
     return {
         "team_id": team_name,
         "team_name": team_name,
         "capacity": {"total": members_count},
         "invited": data,
         "tried_ids": [team_name],
-        "tried": [team_name]
+        "tried": [team_name],
     }
+
 
 def ensure_code_sheet_columns(ws_codes, required_headers: list[str]):
     headers = ws_codes.row_values(1)
@@ -317,8 +360,6 @@ def get_max_team_size() -> int:
         return v if v > 0 else 5
     except Exception:
         return 5
-
-
 
 
 def maybe_send_smtp_email(to_email: str, activation_code: str):
@@ -452,7 +493,6 @@ def activate():
 
     maybe_send_smtp_email(to_email=email, activation_code=code)
 
-    # Bổ sung thông tin team để client / log có thể xem được tên + id
     return jsonify(
         {
             "success": True,
