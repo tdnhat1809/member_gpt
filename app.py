@@ -248,22 +248,14 @@ def invite_with_failover(auth: str, member_email: str, max_size: int):
     base = os.getenv("MANAGETEAM_BASE_URL", "https://trandinhat.tokyo/api").rstrip("/")
     url = f"{base}/public/add-member"
 
-    # --- FIX: dùng _request_with_cloudflare_retry thay vì requests.post thuần ---
     try:
-        resp = _request_with_cloudflare_retry(
-            method="POST",
-            url=url,
-            json={"email": member_email},
-            timeout=30,
-            retries=3,
-        )
+        resp = requests.post(url, json={"email": member_email}, timeout=15)
     except Exception as e:
         raise RuntimeError(f"Không thể kết nối tới server: {e}")
 
-    # --- FIX: tách riêng việc parse JSON để tránh UnboundLocalError ---
     try:
         data = resp.json()
-    except requests.exceptions.JSONDecodeError:
+    except (ValueError, requests.exceptions.JSONDecodeError):
         raise RuntimeError(
             f"Server trả về HTML thay vì JSON (HTTP {resp.status_code}). "
             "Kiểm tra lại URL API."
