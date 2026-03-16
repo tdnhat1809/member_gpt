@@ -450,40 +450,53 @@ def activate():
         tried = invite_info.get("tried_ids") or []
 
         ws_acts.append_row([ts, code, email, team_id], value_input_option="RAW")
+
+        cells_to_update = []
         # Bind activation info on first activation.
         if not activated_dt:
             activated_dt = now_dt
             expires_dt = add_months(activated_dt, ttl_months)
-            ws_codes.update_cell(row_idx, cols["activated_at"], activated_dt.isoformat(timespec="seconds"))
-            ws_codes.update_cell(row_idx, cols["expires_at"], expires_dt.isoformat(timespec="seconds"))
+            cells_to_update.append(gspread.Cell(row=row_idx, col=cols["activated_at"], value=activated_dt.isoformat(timespec="seconds")))
+            cells_to_update.append(gspread.Cell(row=row_idx, col=cols["expires_at"], value=expires_dt.isoformat(timespec="seconds")))
         else:
             # If expires_at wasn't present, backfill.
             if expires_dt and not existing_expires_raw:
-                ws_codes.update_cell(row_idx, cols["expires_at"], expires_dt.isoformat(timespec="seconds"))
+                cells_to_update.append(gspread.Cell(row=row_idx, col=cols["expires_at"], value=expires_dt.isoformat(timespec="seconds")))
 
-        ws_codes.update_cell(row_idx, cols["email"], email)
-        ws_codes.update_cell(row_idx, cols["team_id"], team_id)
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["email"], value=email))
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["team_id"], value=team_id))
         if "team_name" in cols:
-            ws_codes.update_cell(row_idx, cols["team_name"], team_name)
-        ws_codes.update_cell(
-            row_idx,
-            cols["status"],
-            f"invited to {team_name or team_id} (total={cap['total']}, tried={len(tried)})",
-        )
-        ws_codes.update_cell(row_idx, cols["error"], "")
+            cells_to_update.append(gspread.Cell(row=row_idx, col=cols["team_name"], value=team_name))
+        
+        status_msg = f"invited to {team_name or team_id} (total={cap['total']}, tried={len(tried)})"
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["status"], value=status_msg))
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["error"], value=""))
+        
+        ws_codes.update_cells(cells_to_update)
+
     except Exception as e:
+        cells_to_update = []
         # If first activation attempt, bind email/time (so code can't be stolen later)
         if not activated_dt:
             activated_dt = now_dt
             expires_dt = add_months(activated_dt, ttl_months)
-            ws_codes.update_cell(row_idx, cols["activated_at"], activated_dt.isoformat(timespec="seconds"))
-            ws_codes.update_cell(row_idx, cols["expires_at"], expires_dt.isoformat(timespec="seconds"))
-        ws_codes.update_cell(row_idx, cols["email"], email)
-        ws_codes.update_cell(row_idx, cols["status"], "failed")
-        ws_codes.update_cell(row_idx, cols["error"], str(e))
+            cells_to_update.append(gspread.Cell(row=row_idx, col=cols["activated_at"], value=activated_dt.isoformat(timespec="seconds")))
+            cells_to_update.append(gspread.Cell(row=row_idx, col=cols["expires_at"], value=expires_dt.isoformat(timespec="seconds")))
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["email"], value=email))
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["status"], value="failed"))
+        cells_to_update.append(gspread.Cell(row=row_idx, col=cols["error"], value=str(e)))
+        
+        ws_codes.update_cells(cells_to_update)
         return jsonify({"success": False, "error": str(e)}), 500
 
-    maybe_send_smtp_email(to_email=email, activation_code=code)
+    import threading
+    def send_email_async(to_email, act_code):
+        try:
+            maybe_send_smtp_email(to_email, act_code)
+        except Exception as err:
+            print(f"Lỗi gửi email: {err}")
+
+    threading.Thread(target=send_email_async, args=(email, code), daemon=True).start()
 
     return jsonify(
         {
