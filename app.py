@@ -249,7 +249,7 @@ def invite_with_failover(auth: str, member_email: str, max_size: int):
     url = f"{base}/public/add-member"
 
     try:
-        resp = requests.post(url, json={"email": member_email}, timeout=15)
+        resp = requests.post(url, json={"email": member_email}, timeout=50)
     except Exception as e:
         raise RuntimeError(f"Không thể kết nối tới server: {e}")
 
