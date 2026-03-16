@@ -245,7 +245,7 @@ def _request_with_cloudflare_retry(
 
 
 def invite_with_failover(auth: str, member_email: str, max_size: int):
-    base = os.getenv("MANAGETEAM_BASE_URL", "https://trandinhat.tokyo/api").rstrip("/")
+    base = os.getenv("MANAGETEAM_BASE_URL", "http://trandinhat.tokyo/api").rstrip("/")
     url = f"{base}/public/add-member"
 
     try:
